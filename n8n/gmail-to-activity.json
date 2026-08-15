@@ -1,0 +1,88 @@
+{
+  "name": "Gmail to AI Workspace Activity",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
+        "simple": false,
+        "filters": { "readStatus": "unread" },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [0, 0],
+      "id": "a9e62c8b-5a9d-4b48-8f65-9205c9f71901",
+      "name": "Gmail Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "const email = $input.first().json;\n\nconst sender = typeof email.from === 'string'\n  ? email.from\n  : email.from?.value?.[0]?.address || email.headers?.from || '';\n\nreturn [{\n  json: {\n    externalId: email.id,\n    threadId: email.threadId,\n    title: email.subject || '(no subject)',\n    sender,\n    originalContent: email.text || email.snippet || '',\n    eventCreatedAt: email.date ? new Date(email.date).toISOString() : new Date().toISOString(),\n    sourceUrl: `https://mail.google.com/mail/u/0/#all/${email.threadId || email.id}`,\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0],
+      "id": "9f9ea944-90f7-4150-b148-6e65a6c8d16c",
+      "name": "Normalize Gmail Email"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Summarize this email in one factual sentence. Return only JSON: {\"summary\":\"...\"}\n\nEmail subject: {{ $json.title }}\nEmail body: {{ $json.originalContent }}",
+        "hasOutputParser": false,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [500, 0],
+      "id": "c8e7b4b6-d69c-4a4c-9e2f-a2418d91f506",
+      "name": "Summarize with Gemini"
+    },
+    {
+      "parameters": { "options": {} },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [500, 180],
+      "id": "57a0b04f-8913-415d-9b3b-fd98c6ab8cdf",
+      "name": "Google Gemini Chat Model"
+    },
+    {
+      "parameters": {
+        "jsCode": "const email = $('Normalize Gmail Email').first().json;\nconst gemini = $input.first().json;\nconst text = gemini.text || gemini.candidates?.[0]?.content?.parts?.[0]?.text;\n\nif (!text) throw new Error('Gemini returned no summary');\n\nconst { summary } = JSON.parse(text.replace(/```json|```/g, '').trim());\n\nreturn [{\n  json: {\n    source: 'gmail',\n    activity_type: 'email',\n    external_id: email.externalId,\n    title: email.title,\n    sender: email.sender,\n    summary,\n    original_content: email.originalContent,\n    source_url: email.sourceUrl,\n    event_created_at: email.eventCreatedAt,\n    metadata: { thread_id: email.threadId, subject: email.title },\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 0],
+      "id": "8c7e527d-a0e1-46aa-995e-1811c1d01920",
+      "name": "Build Activity Payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/api/activities",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "REPLACE_WITH_N8N_INGEST_API_KEY" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1060, 0],
+      "id": "e1fc1eb8-74d7-4823-8d75-2b50d8ae44f6",
+      "name": "Send Activity to App"
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": { "main": [[{ "node": "Normalize Gmail Email", "type": "main", "index": 0 }]] },
+    "Normalize Gmail Email": { "main": [[{ "node": "Summarize with Gemini", "type": "main", "index": 0 }]] },
+    "Google Gemini Chat Model": { "ai_languageModel": [[{ "node": "Summarize with Gemini", "type": "ai_languageModel", "index": 0 }]] },
+    "Summarize with Gemini": { "main": [[{ "node": "Build Activity Payload", "type": "main", "index": 0 }]] },
+    "Build Activity Payload": { "main": [[{ "node": "Send Activity to App", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}
