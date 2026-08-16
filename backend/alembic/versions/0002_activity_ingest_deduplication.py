@@ -10,12 +10,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_unique_constraint(
-        "uq_activities_user_source_external_id",
-        "activities",
-        ["user_id", "source", "external_id"],
-    )
+    with op.batch_alter_table("activities") as batch_op:
+        batch_op.create_unique_constraint(
+            "uq_activities_user_source_external_id",
+            ["user_id", "source", "external_id"],
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint("uq_activities_user_source_external_id", "activities", type_="unique")
+    with op.batch_alter_table("activities") as batch_op:
+        batch_op.drop_constraint("uq_activities_user_source_external_id", type_="unique")

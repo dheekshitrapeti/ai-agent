@@ -1,0 +1,91 @@
+{
+  "id": "slack-workspace-activity-01",
+  "name": "Slack to AI Workspace Activity",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "slack-sync",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "id": "s11a2b3c-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
+      "name": "Webhook Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nif (!items || items.length === 0) return [];\n\nreturn items.map((itemObj) => {\n  const item = itemObj.json;\n  const id = item.id || item.ts || `slack-${Date.now()}`;\n  const title = item.title || item.channel_name || 'Slack Message';\n  const sender = item.user_name || item.sender || 'Slack User';\n  const originalContent = item.text || item.message || title;\n  const eventCreatedAt = item.ts\n    ? new Date(parseFloat(item.ts) * 1000).toISOString()\n    : new Date().toISOString();\n  const sourceUrl = item.permalink || 'https://slack.com';\n\n  return {\n    json: {\n      externalId: id,\n      title,\n      sender,\n      originalContent,\n      eventCreatedAt,\n      sourceUrl\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0],
+      "id": "s9f9ea94-90f7-4150-b148-6e65a6c8d16c",
+      "name": "Normalize Slack Message"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Summarize this Slack message in one factual sentence. Return only JSON: {\"summary\":\"...\"}\n\nSender: {{ $json.sender }}\nMessage: {{ $json.originalContent }}",
+        "hasOutputParser": false,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [480, 0],
+      "id": "sc8e7b4b-d69c-4a4c-9e2f-a2418d91f506",
+      "name": "Summarize with Gemini"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [480, 180],
+      "id": "s57a0b04-8913-415d-9b3b-fd98c6ab8cdf",
+      "name": "Google Gemini Chat Model"
+    },
+    {
+      "parameters": {
+        "jsCode": "const msg = $('Normalize Slack Message').first().json;\nlet summary = 'Slack message received.';\n\ntry {\n  const input = $input.first().json;\n  const text = input.text || input.candidates?.[0]?.content?.parts?.[0]?.text || '';\n  if (text) {\n    const cleaned = text.replace(/```json|```/g, '').trim();\n    const parsed = JSON.parse(cleaned);\n    summary = parsed.summary || text;\n  }\n} catch (e) {\n  summary = msg.originalContent.slice(0, 150) + '...';\n}\n\nreturn [{\n  json: {\n    source: 'slack',\n    activity_type: 'message',\n    external_id: msg.externalId,\n    title: msg.title,\n    sender: msg.sender,\n    summary,\n    original_content: msg.originalContent,\n    source_url: msg.sourceUrl,\n    event_created_at: msg.eventCreatedAt,\n    metadata: { channel: msg.title }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 0],
+      "id": "s8c7e527-a0e1-46aa-995e-1811c1d01920",
+      "name": "Build Activity Payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/activities",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "secret-n8n-key-123" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 0],
+      "id": "se1fc1eb-74d7-4823-8d75-2b50d8ae44f6",
+      "name": "Send Activity to App"
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": { "main": [[{ "node": "Normalize Slack Message", "type": "main", "index": 0 }]] },
+    "Normalize Slack Message": { "main": [[{ "node": "Summarize with Gemini", "type": "main", "index": 0 }]] },
+    "Google Gemini Chat Model": { "ai_languageModel": [[{ "node": "Summarize with Gemini", "type": "ai_languageModel", "index": 0 }]] },
+    "Summarize with Gemini": { "main": [[{ "node": "Build Activity Payload", "type": "main", "index": 0 }]] },
+    "Build Activity Payload": { "main": [[{ "node": "Send Activity to App", "type": "main", "index": 0 }]] }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" }
+}

@@ -1,6 +1,19 @@
 {
+  "id": "gmail-workspace-activity-01",
   "name": "Gmail to AI Workspace Activity",
   "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gmail-sync",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "id": "b11a2b3c-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
+      "name": "Webhook Trigger"
+    },
     {
       "parameters": {
         "pollTimes": { "item": [{ "mode": "everyMinute" }] },
@@ -10,58 +23,76 @@
       },
       "type": "n8n-nodes-base.gmailTrigger",
       "typeVersion": 1.4,
-      "position": [0, 0],
+      "position": [0, 200],
       "id": "a9e62c8b-5a9d-4b48-8f65-9205c9f71901",
       "name": "Gmail Trigger"
     },
     {
       "parameters": {
-        "jsCode": "const email = $input.first().json;\n\nconst sender = typeof email.from === 'string'\n  ? email.from\n  : email.from?.value?.[0]?.address || email.headers?.from || '';\n\nreturn [{\n  json: {\n    externalId: email.id,\n    threadId: email.threadId,\n    title: email.subject || '(no subject)',\n    sender,\n    originalContent: email.text || email.snippet || '',\n    eventCreatedAt: email.date ? new Date(email.date).toISOString() : new Date().toISOString(),\n    sourceUrl: `https://mail.google.com/mail/u/0/#all/${email.threadId || email.id}`,\n  },\n}];"
+        "operation": "getAll",
+        "limit": 5,
+        "filters": {
+          "q": "is:unread"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [240, 0],
+      "id": "7c8d9e0f-1a2b-3c4d-5e6f-7a8b9c0d1e2f",
+      "name": "Fetch Unread Emails"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nif (!items || items.length === 0) return [];\n\nreturn items.map((itemObj) => {\n  const item = itemObj.json;\n  const id = item.id || item.threadId || `email-${Date.now()}`;\n  const title = item.subject || item.snippet || item.title || '(No Subject)';\n  const sender = typeof item.from === 'string'\n    ? item.from\n    : (item.from?.value?.[0]?.address || item.sender || 'Unknown Sender');\n  const originalContent = item.snippet || item.text || item.body || item.originalContent || title;\n  const eventCreatedAt = item.internalDate\n    ? new Date(parseInt(item.internalDate)).toISOString()\n    : (item.date ? new Date(item.date).toISOString() : new Date().toISOString());\n  const sourceUrl = `https://mail.google.com/mail/u/0/#all/${item.threadId || id}`;\n\n  return {\n    json: {\n      externalId: id,\n      threadId: item.threadId || id,\n      title,\n      sender,\n      originalContent,\n      eventCreatedAt,\n      sourceUrl\n    }\n  };\n});"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [240, 0],
+      "position": [480, 100],
       "id": "9f9ea944-90f7-4150-b148-6e65a6c8d16c",
-      "name": "Normalize Gmail Email"
+      "name": "Normalize Email"
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Summarize this email in one factual sentence. Return only JSON: {\"summary\":\"...\"}\n\nEmail subject: {{ $json.title }}\nEmail body: {{ $json.originalContent }}",
+        "text": "=Summarize this email in one factual sentence. Return only JSON: {\"summary\":\"...\"}\n\nEmail subject: {{ $json.title }}\nSender: {{ $json.sender }}\nEmail content: {{ $json.originalContent }}",
         "hasOutputParser": false,
         "options": {}
       },
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.9,
-      "position": [500, 0],
+      "position": [720, 100],
       "id": "c8e7b4b6-d69c-4a4c-9e2f-a2418d91f506",
       "name": "Summarize with Gemini"
     },
     {
-      "parameters": { "options": {} },
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash",
+        "options": {}
+      },
       "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
       "typeVersion": 1.1,
-      "position": [500, 180],
+      "position": [720, 280],
       "id": "57a0b04f-8913-415d-9b3b-fd98c6ab8cdf",
       "name": "Google Gemini Chat Model"
     },
     {
       "parameters": {
-        "jsCode": "const email = $('Normalize Gmail Email').first().json;\nconst gemini = $input.first().json;\nconst text = gemini.text || gemini.candidates?.[0]?.content?.parts?.[0]?.text;\n\nif (!text) throw new Error('Gemini returned no summary');\n\nconst { summary } = JSON.parse(text.replace(/```json|```/g, '').trim());\n\nreturn [{\n  json: {\n    source: 'gmail',\n    activity_type: 'email',\n    external_id: email.externalId,\n    title: email.title,\n    sender: email.sender,\n    summary,\n    original_content: email.originalContent,\n    source_url: email.sourceUrl,\n    event_created_at: email.eventCreatedAt,\n    metadata: { thread_id: email.threadId, subject: email.title },\n  },\n}];"
+        "jsCode": "const email = $('Normalize Email').first().json;\nlet summary = 'Email summary received.';\n\ntry {\n  const input = $input.first().json;\n  const text = input.text || input.candidates?.[0]?.content?.parts?.[0]?.text || '';\n  if (text) {\n    const cleaned = text.replace(/```json|```/g, '').trim();\n    const parsed = JSON.parse(cleaned);\n    summary = parsed.summary || text;\n  }\n} catch (e) {\n  summary = email.originalContent.slice(0, 150) + '...';\n}\n\nreturn [{\n  json: {\n    source: 'gmail',\n    activity_type: 'email',\n    external_id: email.externalId,\n    title: email.title,\n    sender: email.sender,\n    summary,\n    original_content: email.originalContent,\n    source_url: email.sourceUrl,\n    event_created_at: email.eventCreatedAt,\n    metadata: { thread_id: email.threadId, subject: email.title }\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [800, 0],
+      "position": [960, 100],
       "id": "8c7e527d-a0e1-46aa-995e-1811c1d01920",
       "name": "Build Activity Payload"
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8000/api/activities",
+        "url": "http://127.0.0.1:8000/api/activities",
         "sendHeaders": true,
         "headerParameters": {
-          "parameters": [{ "name": "X-API-Key", "value": "REPLACE_WITH_N8N_INGEST_API_KEY" }]
+          "parameters": [{ "name": "X-API-Key", "value": "secret-n8n-key-123" }]
         },
         "sendBody": true,
         "contentType": "json",
@@ -71,18 +102,20 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1060, 0],
+      "position": [1200, 100],
       "id": "e1fc1eb8-74d7-4823-8d75-2b50d8ae44f6",
       "name": "Send Activity to App"
     }
   ],
   "connections": {
-    "Gmail Trigger": { "main": [[{ "node": "Normalize Gmail Email", "type": "main", "index": 0 }]] },
-    "Normalize Gmail Email": { "main": [[{ "node": "Summarize with Gemini", "type": "main", "index": 0 }]] },
+    "Webhook Trigger": { "main": [[{ "node": "Fetch Unread Emails", "type": "main", "index": 0 }]] },
+    "Fetch Unread Emails": { "main": [[{ "node": "Normalize Email", "type": "main", "index": 0 }]] },
+    "Gmail Trigger": { "main": [[{ "node": "Normalize Email", "type": "main", "index": 0 }]] },
+    "Normalize Email": { "main": [[{ "node": "Summarize with Gemini", "type": "main", "index": 0 }]] },
     "Google Gemini Chat Model": { "ai_languageModel": [[{ "node": "Summarize with Gemini", "type": "ai_languageModel", "index": 0 }]] },
     "Summarize with Gemini": { "main": [[{ "node": "Build Activity Payload", "type": "main", "index": 0 }]] },
     "Build Activity Payload": { "main": [[{ "node": "Send Activity to App", "type": "main", "index": 0 }]] }
   },
-  "active": false,
+  "active": true,
   "settings": { "executionOrder": "v1" }
 }
